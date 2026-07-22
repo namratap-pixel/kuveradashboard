@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kuvera · Ops Dashboard</title>
+<style>
+  :root{
+    --bg: #F5F7F7;
+    --panel: #FFFFFF;
+    --line: #E3E8E7;
+    --ink: #16211E;
+    --ink-soft: #5B6A66;
+    --teal: #0E7C66;
+    --teal-deep: #0A5A4B;
+    --teal-tint: #E7F3F0;
+    --amber: #B9781F;
+    --amber-tint: #FBF1E0;
+    --red: #B4402B;
+    --red-tint: #FBEAE6;
+    --blue: #35618C;
+    --radius: 10px;
+    --mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
+  .topbar{
+    background:var(--panel);
+    border-bottom:1px solid var(--line);
+    position:sticky; top:0; z-index:20;
+  }
+  .topbar-inner{
+    max-width:1400px; margin:0 auto; padding:16px 24px;
+    display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  }
+  .brand{display:flex; align-items:center; gap:10px;}
+  .brand-mark{
+    width:34px; height:34px; border-radius:9px;
+    background:linear-gradient(155deg, var(--teal) 0%, var(--teal-deep) 100%);
+    display:flex; align-items:center; justify-content:center;
+    color:#fff; font-weight:700; font-size:15px; font-family:var(--mono);
+    flex-shrink:0;
+  }
+  .brand-text h1{font-size:16px; margin:0; font-weight:700; letter-spacing:-0.01em;}
+  .brand-text span{font-size:12px; color:var(--ink-soft);}
+
+  .status-cluster{display:flex; align-items:center; gap:14px; font-size:12.5px; color:var(--ink-soft);}
+  .dot{width:7px; height:7px; border-radius:50%; background:var(--teal); display:inline-block; margin-right:6px; box-shadow:0 0 0 3px var(--teal-tint);}
+  #refreshBtn{
+    border:1px solid var(--line); background:var(--panel); color:var(--ink);
+    padding:7px 14px; border-radius:7px; font-size:12.5px; font-weight:600; cursor:pointer;
+    display:flex; align-items:center; gap:6px;
+  }
+  #refreshBtn:hover{border-color:var(--teal); color:var(--teal);}
+  #refreshBtn.spin svg{animation:spin 0.8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  .tabs{
+    max-width:1400px; margin:0 auto; padding:0 24px;
+    display:flex; gap:2px; overflow-x:auto; border-bottom:1px solid var(--line); background:var(--panel);
+  }
+  .tab-btn{
+    background:none; border:none; padding:13px 16px; font-size:13px; font-weight:600;
+    color:var(--ink-soft); cursor:pointer; white-space:nowrap; border-bottom:2.5px solid transparent;
+    display:flex; align-items:center; gap:7px;
+  }
+  .tab-btn.active{color:var(--teal-deep); border-bottom-color:var(--teal);}
+  .tab-btn:hover{color:var(--teal-deep);}
+
+  main{max-width:1400px; margin:0 auto; padding:22px 24px 60px;}
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    overflow:hidden;
+  }
+  .panel-head{
+    padding:16px 20px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+  }
+  .panel-head h2{font-size:14.5px; margin:0; font-weight:700;}
+  .panel-head p{margin:2px 0 0; font-size:12px; color:var(--ink-soft);}
+
+  .chip-group{display:flex; gap:4px; background:var(--bg); border-radius:8px; padding:3px;}
+  .chip{
+    border:none; background:none; padding:6px 13px; font-size:12px; font-weight:600;
+    color:var(--ink-soft); border-radius:6px; cursor:pointer;
+  }
+  .chip.active{background:var(--panel); color:var(--teal-deep); box-shadow:0 1px 2px rgba(0,0,0,.08);}
+
+  select.month-pick{
+    border:1px solid var(--line); border-radius:7px; padding:6px 10px; font-size:12.5px;
+    font-weight:600; color:var(--ink); background:var(--panel); cursor:pointer;
+  }
+
+  table{width:100%; border-collapse:collapse; font-size:12.8px;}
+  thead th{
+    text-align:right; padding:10px 14px; font-size:10.5px; text-transform:uppercase;
+    letter-spacing:.04em; color:var(--ink-soft); font-weight:700; border-bottom:1px solid var(--line);
+    background:#FAFBFB; white-space:nowrap;
+  }
+  thead th:first-child, tbody td:first-child{text-align:left; position:sticky; left:0; background:inherit;}
+  tbody td{padding:10px 14px; text-align:right; border-bottom:1px solid var(--line); font-family:var(--mono); white-space:nowrap;}
+  tbody td:first-child{font-family:'Inter',sans-serif; font-weight:600; color:var(--ink);}
+  tbody tr:hover td{background:var(--teal-tint);}
+  tbody tr.totals td{background:#F2F5F4; font-weight:700; border-top:1.5px solid var(--line);}
+  tbody tr.totals:hover td{background:#F2F5F4;}
+  .table-scroll{overflow-x:auto;}
+
+  .pill{
+    display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:700;
+    font-family:'Inter',sans-serif;
+  }
+  .pill.good{background:var(--teal-tint); color:var(--teal-deep);}
+  .pill.warn{background:var(--amber-tint); color:var(--amber);}
+  .pill.bad{background:var(--red-tint); color:var(--red);}
+  .pill.off{background:var(--bg); color:var(--ink-soft);}
+  .pill.on{background:var(--teal-tint); color:var(--teal-deep);}
+
+  .empty-state{padding:60px 20px; text-align:center; color:var(--ink-soft); font-size:13px;}
+  .empty-state svg{opacity:.35; margin-bottom:10px;}
+
+  .foot-note{max-width:1400px; margin:14px auto 0; padding:0 24px; font-size:11.5px; color:var(--ink-soft);}
+
+  ::-webkit-scrollbar{height:8px; width:8px;}
+  ::-webkit-scrollbar-thumb{background:#D3DAD8; border-radius:8px;}
+
+  @media (max-width: 640px){
+    .topbar-inner{padding:12px 16px;} main{padding:16px;} .tabs{padding:0 16px;}
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="brand-mark">K</div>
+      <div class="brand-text">
+        <h1>Kuvera Ops Dashboard</h1>
+        <span id="lastUpdated">Loading…</span>
+      </div>
+    </div>
+    <div class="status-cluster">
+      <span><span class="dot"></span>Live</span>
+      <button id="refreshBtn" onclick="refreshAll(true)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+        Refresh
+      </button>
+    </div>
+  </div>
+  <nav class="tabs" id="tabNav"></nav>
+</div>
+
+<main>
+  <div class="panel" id="panelRoot"></div>
+</main>
+
+<p class="foot-note" id="footNote"></p>
+
+<script>
+const TABS = [
+  {id:'productivity', label:'Productivity'},
+  {id:'frtart', label:'FRT & ART'},
+  {id:'csat', label:'CSAT'},
+  {id:'attendance', label:'Attendance'},
+  {id:'leave', label:'Leave Balance'},
+  {id:'roundrobin', label:'Round Robin'},
+];
+let activeTab = 'productivity';
+let channelFilter = 'all';
+let metricsCache = null;
+let attendanceCache = {};
+let leaveCache = null;
+let rrCache = null;
+let attMonth = new Date().getMonth()+1, attYear = new Date().getFullYear();
+
+const MONTH_NAMES = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
+
+function esc(s){return (s===null||s===undefined) ? '—' : s;}
+function pct(v){return v===null||v===undefined ? '—' : v+'%';}
+function hrs(v){return v===null||v===undefined ? '—' : v+'h';}
+function num(v){return v===null||v===undefined ? '0' : v;}
+
+function renderTabs(){
+  const nav = document.getElementById('tabNav');
+  nav.innerHTML = TABS.map(t => `<button class="tab-btn ${t.id===activeTab?'active':''}" onclick="switchTab('${t.id}')">${t.label}</button>`).join('');
+}
+function switchTab(id){
+  activeTab = id;
+  renderTabs();
+  renderActivePanel();
+}
+
+async function fetchJSON(url){
+  const r = await fetch(url);
+  return r.json();
+}
+
+async function loadMetrics(){
+  const j = await fetchJSON('/api/metrics');
+  metricsCache = j;
+  document.getElementById('lastUpdated').textContent = 'Updated ' + (j.last_updated || '—');
+}
+async function loadAttendance(){
+  const key = attYear+'-'+attMonth;
+  const j = await fetchJSON(`/api/attendance?year=${attYear}&month=${attMonth}`);
+  attendanceCache[key] = j;
+}
+async function loadLeave(){
+  leaveCache = await fetchJSON('/api/leave-balance');
+}
+async function loadRoundRobin(){
+  rrCache = await fetchJSON('/api/round-robin');
+}
+
+async function refreshAll(spin){
+  const btn = document.getElementById('refreshBtn');
+  if(spin) btn.classList.add('spin');
+  try{
+    await Promise.all([loadMetrics(), loadLeave(), loadRoundRobin(), loadAttendance()]);
+  }catch(e){ console.error(e); }
+  renderActivePanel();
+  if(spin) setTimeout(()=>btn.classList.remove('spin'), 400);
+}
+
+function agentRows(){
+  if(!metricsCache || !metricsCache.data) return [];
+  return Object.entries(metricsCache.data).map(([name, byChannel]) => {
+    const key = channelFilter === 'all' ? 'all' : channelFilter;
+    return {name, m: byChannel[key] || byChannel.all};
+  });
+}
+
+function sumRows(rows, field){
+  return rows.reduce((a,r)=> a + (r.m[field]||0), 0);
+}
+
+function channelChips(){
+  const chans = [['all','All'],['Email','Email'],['Chat','Chat'],['Phone','Phone']];
+  return `<div class="chip-group">${chans.map(([v,l])=>
+    `<button class="chip ${channelFilter===v?'active':''}" onclick="setChannel('${v}')">${l}</button>`).join('')}</div>`;
+}
+function setChannel(v){ channelFilter = v; renderActivePanel(); }
+
+function emptyState(msg){
+  return `<div class="empty-state"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 12h8M8 8h8M8 16h5"/></svg><div>${msg}</div></div>`;
+}
+
+// ---- Tab 1: Productivity ----
+function renderProductivity(){
+  const rows = agentRows();
+  if(!rows.length) return emptyState('No productivity data yet — waiting on the first Freshdesk sync.');
+  const totals = {
+    assigned_today: sumRows(rows,'assigned_today'),
+    total_open: sumRows(rows,'total_open'),
+    resolved_today: sumRows(rows,'resolved_today'),
+    pending: sumRows(rows,'pending'),
+    waiting_third_party: sumRows(rows,'waiting_third_party'),
+    waiting_customer: sumRows(rows,'waiting_customer'),
+    total_unresolved: sumRows(rows,'total_unresolved'),
+    irt_count: sumRows(rows,'irt_count'),
+    non_irt_count: sumRows(rows,'non_irt_count'),
+  };
+  const body = rows.sort((a,b)=>b.m.total_unresolved - a.m.total_unresolved).map(({name,m}) => `
+    <tr>
+      <td>${name}</td>
+      <td>${num(m.assigned_today)}</td>
+      <td>${num(m.total_open)}</td>
+      <td>${num(m.resolved_today)}</td>
+      <td>${num(m.pending)}</td>
+      <td>${num(m.waiting_third_party)}</td>
+      <td>${num(m.waiting_customer)}</td>
+      <td><strong>${num(m.total_unresolved)}</strong></td>
+      <td>${num(m.irt_count)}</td>
+      <td>${num(m.non_irt_count)}</td>
+    </tr>`).join('');
+  return `
+    <div class="panel-head">
+      <div><h2>Productivity</h2><p>Ticket workload per agent · resets daily at midnight IST</p></div>
+      ${channelChips()}
+    </div>
+    <div class="table-scroll"><table>
+      <thead><tr>
+        <th>Agent</th><th>Assigned&nbsp;Today</th><th>Total&nbsp;Open</th><th>Resolved&nbsp;Today</th>
+        <th>Pending</th><th>Waiting&nbsp;3rd&nbsp;Party</th><th>Waiting&nbsp;Customer</th>
+        <th>Total&nbsp;Unresolved</th><th>IRT</th><th>NON&nbsp;IRT</th>
+      </tr></thead>
+      <tbody>${body}
+        <tr class="totals">
+          <td>Team total</td>
+          <td>${totals.assigned_today}</td><td>${totals.total_open}</td><td>${totals.resolved_today}</td>
+          <td>${totals.pending}</td><td>${totals.waiting_third_party}</td><td>${totals.waiting_customer}</td>
+          <td>${totals.total_unresolved}</td><td>${totals.irt_count}</td><td>${totals.non_irt_count}</td>
+        </tr>
+      </tbody>
+    </table></div>`;
+}
+
+// ---- Tab 2: FRT & ART ----
+function scorePill(v, goodMin, warnMin){
+  if(v===null||v===undefined) return '<span class="pill off">—</span>';
+  const cls = v>=goodMin ? 'good' : (v>=warnMin ? 'warn' : 'bad');
+  return `<span class="pill ${cls}">${v}%</span>`;
+}
+function renderFrtArt(){
+  const rows = agentRows();
+  if(!rows.length) return emptyState('No FRT/ART data yet.');
+  const body = rows.sort((a,b)=>(b.m.frt_score||0)-(a.m.frt_score||0)).map(({name,m}) => `
+    <tr>
+      <td>${name}</td>
+      <td>${scorePill(m.frt_score, 85, 65)}</td>
+      <td>${num(m.frt_within)}</td>
+      <td>${num(m.frt_breached)}</td>
+      <td>${hrs(m.frt_breach_avg_hrs)}</td>
+      <td>${hrs(m.art_hrs)}</td>
+      <td>${pct(m.resolution_rate)}</td>
+    </tr>`).join('');
+  return `
+    <div class="panel-head">
+      <div><h2>FRT &amp; ART</h2><p>First Response Time and Average Resolution Time · SLA target: 12h FRT. Note: chat-resolved tickets left Open can show a reporting-gap FRT breach — see the process note.</p></div>
+      ${channelChips()}
+    </div>
+    <div class="table-scroll"><table>
+      <thead><tr>
+        <th>Agent</th><th>FRT&nbsp;Score</th><th>Within&nbsp;SLA</th><th>Breached</th>
+        <th>Avg&nbsp;Breach&nbsp;Overage</th><th>ART&nbsp;(avg)</th><th>Resolution&nbsp;Rate</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>`;
+}
+
+// ---- Tab 3: CSAT ----
+function renderCsat(){
+  const rows = agentRows();
+  if(!rows.length) return emptyState('No CSAT data yet.');
+  const body = rows.sort((a,b)=>(b.m.csat_score||0)-(a.m.csat_score||0)).map(({name,m}) => `
+    <tr>
+      <td>${name}</td>
+      <td>${scorePill(m.csat_score, 90, 75)}</td>
+      <td>${num(m.csat_happy)}</td>
+      <td>${num(m.csat_neutral)}</td>
+      <td>${num(m.csat_bad)}</td>
+      <td>${num(m.csat_total)}</td>
+    </tr>`).join('');
+  return `
+    <div class="panel-head">
+      <div><h2>CSAT</h2><p>Customer satisfaction ratings, agent-wise</p></div>
+      ${channelChips()}
+    </div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Agent</th><th>CSAT&nbsp;Score</th><th>Happy</th><th>Neutral</th><th>Bad</th><th>Total&nbsp;Ratings</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>`;
+}
+
+// ---- Tab 4: Attendance ----
+function monthOptions(){
+  let opts = '';
+  const now = new Date();
+  for(let i=0;i<7;i++){
+    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+    const y = d.getFullYear(), m = d.getMonth()+1;
+    opts += `<option value="${y}-${m}" ${y===attYear&&m===attMonth?'selected':''}>${MONTH_NAMES[m]} ${y}</option>`;
+  }
+  return opts;
+}
+function onMonthChange(v){
+  const [y,m] = v.split('-').map(Number);
+  attYear = y; attMonth = m;
+  loadAttendance().then(renderActivePanel);
+}
+function renderAttendance(){
+  const key = attYear+'-'+attMonth;
+  const data = attendanceCache[key];
+  const lb = (leaveCache && leaveCache.agents) || {};
+  const head = `
+    <div class="panel-head">
+      <div><h2>Attendance</h2><p>${MONTH_NAMES[attMonth]} ${attYear} · from the Mumbai Team Attendance sheet</p></div>
+      <select class="month-pick" onchange="onMonthChange(this.value)">${monthOptions()}</select>
+    </div>`;
+  if(!data || !Object.keys(data.agents||{}).length){
+    return head + emptyState('No attendance sheet found for this month.');
+  }
+  const names = Object.keys(data.agents).sort();
+  const body = names.map(name => {
+    const a = data.agents[name];
+    const leave = lb[name] || {};
+    return `<tr>
+      <td>${name}</td>
+      <td>${a.present_days}</td>
+      <td>${a.PL}</td>
+      <td>${a.UL}</td>
+      <td>${num(leave.oh_availed)} <span style="color:var(--ink-soft); font-weight:400;">(YTD)</span></td>
+      <td>${num(leave.worked_on_mh)} <span style="color:var(--ink-soft); font-weight:400;">(YTD)</span></td>
+      <td>${a.wfh}</td>
+      <td>${a.late_login}</td>
+    </tr>`;
+  }).join('');
+  return head + `
+    <div class="table-scroll"><table>
+      <thead><tr>
+        <th>Agent</th><th>Present&nbsp;Days</th><th>Planned&nbsp;Leave</th><th>Unplanned&nbsp;Leave</th>
+        <th>Optional&nbsp;Holiday</th><th>Mandatory&nbsp;Holiday</th><th>WFH</th><th>Late&nbsp;Login</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>`;
+}
+
+// ---- Tab 5: Leave Balance ----
+function renderLeave(){
+  if(!leaveCache || !leaveCache.agents || !Object.keys(leaveCache.agents).length){
+    return `<div class="panel-head"><div><h2>Leave Balance</h2><p>21 annual leaves (excl. MH/OH) · 4 Optional Holidays/year</p></div></div>` + emptyState('No leave data found.');
+  }
+  const names = Object.keys(leaveCache.agents).sort();
+  const body = names.map(name => {
+    const l = leaveCache.agents[name];
+    const balCls = l.balance <= 3 ? 'bad' : (l.balance <= 7 ? 'warn' : 'good');
+    return `<tr>
+      <td>${name}</td>
+      <td>${l.annual_entitlement}</td>
+      <td>${l.approved}</td>
+      <td>${l.unscheduled}</td>
+      <td>${l.used}</td>
+      <td><span class="pill ${balCls}">${l.balance}</span></td>
+      <td>${l.oh_entitlement}</td>
+      <td>${l.oh_availed}</td>
+      <td>${l.oh_balance}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <div class="panel-head">
+      <div><h2>Leave Balance</h2><p>21 annual leaves (excluding MH/OH) · up to 4 Optional Holidays per year</p></div>
+    </div>
+    <div class="table-scroll"><table>
+      <thead><tr>
+        <th>Agent</th><th>Entitlement</th><th>Planned&nbsp;Used</th><th>Unplanned&nbsp;Used</th>
+        <th>Total&nbsp;Used</th><th>Balance</th><th>OH&nbsp;Entitlement</th><th>OH&nbsp;Availed</th><th>OH&nbsp;Balance</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>`;
+}
+
+// ---- Tab 6: Round Robin ----
+function renderRoundRobin(){
+  if(!rrCache || !rrCache.agents || !rrCache.agents.length){
+    return `<div class="panel-head"><div><h2>Round Robin</h2><p>Live on/off tracking, today</p></div></div>` + emptyState('No round-robin data yet.');
+  }
+  const body = rrCache.agents.map(a => {
+    const cls = a.currently_on ? 'on' : 'off';
+    return `<tr>
+      <td>${a.name}</td>
+      <td>${a.roster_status}</td>
+      <td><span class="pill ${cls}">${a.currently_on ? 'On' : 'Off'}</span></td>
+      <td>${a.on_hours_today}h</td>
+      <td>${a.status_label}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <div class="panel-head">
+      <div><h2>Round Robin</h2><p>Today, ${rrCache.date} · polled every 5 min from Freshdesk agent availability, cross-checked against the roster for week-offs</p></div>
+    </div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Agent</th><th>Roster</th><th>Live&nbsp;Status</th><th>Hours&nbsp;On&nbsp;Today</th><th>Detail</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>`;
+}
+
+function renderActivePanel(){
+  const root = document.getElementById('panelRoot');
+  const renderers = {
+    productivity: renderProductivity,
+    frtart: renderFrtArt,
+    csat: renderCsat,
+    attendance: renderAttendance,
+    leave: renderLeave,
+    roundrobin: renderRoundRobin,
+  };
+  root.innerHTML = renderers[activeTab]();
+}
+
+document.getElementById('footNote').textContent =
+  'Ticket data refreshes hourly from Freshdesk · Attendance, Leave and Roster data come from the workbooks bundled with the app and update on redeploy.';
+
+renderTabs();
+refreshAll(false);
+setInterval(()=>refreshAll(false), 60000);
+</script>
+</body>
+</html>

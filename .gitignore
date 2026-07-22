@@ -1,0 +1,4 @@
+new/
+DEPLOY_GUIDE.txt
+*.pyc
+__pycache__/
