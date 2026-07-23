@@ -194,7 +194,7 @@ def fetch_csat(since_days=30):
         if len(data) < 100:
             break
         page += 1
-        if page > 5:    # cap at 500 ratings — enough for per-agent averages
+        if page > 3:    # cap at 300 ratings — enough for per-agent averages
             break
         time.sleep(1.5)
     return by_agent
@@ -322,7 +322,7 @@ def compute_metrics():
     # Used for: assigned_today, resolved_today, urgent_high, reopened,
     #           FRT today/14d avg, ART today/14d avg.
     since = (now_utc - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since}, max_pages=20)
+    all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since}, max_pages=5)
     logger.info(f"Tickets (14d): {len(all_tickets)}")
 
     csat_map = fetch_csat()
