@@ -151,11 +151,12 @@ def classify_irt(ticket):
     return "NON_IRT"
 
 
-def fetch_csat():
+def fetch_csat(since_days=30):
     by_agent = {}
     page = 1
+    since_epoch = int((datetime.now(pytz.utc) - timedelta(days=since_days)).timestamp())
     while True:
-        r = fd_get("surveys/satisfaction_ratings", {"page": page, "per_page": 100})
+        r = fd_get("surveys/satisfaction_ratings", {"since": since_epoch, "page": page, "per_page": 100})
         if r is None or r.status_code != 200:
             break
         data = r.json()
@@ -186,6 +187,8 @@ def fetch_csat():
         if len(data) < 100:
             break
         page += 1
+        if page > 20:   # cap at 2000 ratings — enough for per-agent averages
+            break
         time.sleep(0.5)
     return by_agent
 
