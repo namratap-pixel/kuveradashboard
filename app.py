@@ -367,19 +367,48 @@ def compute_metrics():
                     except Exception:
                         pass
 
-    # Correct all unresolved counts using search API (no date cutoff, catches all statuses)
-    logger.info("Correcting unresolved counts via search API...")
+    # Correct unresolved counts AND classify IRT/NON IRT from the same search API source
+    # so that IRT + NON IRT always equals total_unresolved
+    logger.info("Correcting unresolved counts and IRT/NON IRT via search API...")
     status_fields = [(2, "total_open"), (3, "pending"), (6, "waiting_customer"), (7, "waiting_third_party")]
     for agent_id, agent_name in target.items():
         m = metrics[agent_name]["all"]
+        m["irt_count"] = 0
+        m["non_irt_count"] = 0
+        m["unknown_irt_count"] = 0
+
         for status_code, field in status_fields:
-            r = fd_get("search/tickets", {"query": f'"status:{status_code} AND agent_id:{agent_id}"'})
-            if r and r.status_code == 200:
-                count = r.json().get("total", 0)
-                m[field] = count
-                if field == "total_open":
-                    m["carry_forward"] = max(0, count - m["assigned_today"])
-            time.sleep(0.3)
+            page = 1
+            while page <= 10:
+                r = fd_get("search/tickets", {
+                    "query": f'"status:{status_code} AND agent_id:{agent_id}"',
+                    "page": page,
+                })
+                if r is None or r.status_code != 200:
+                    break
+                data = r.json()
+                if page == 1:
+                    count = data.get("total", 0)
+                    m[field] = count
+                    if field == "total_open":
+                        m["carry_forward"] = max(0, count - m["assigned_today"])
+                for t in data.get("results", []):
+                    if classify_irt(t) == "IRT":
+                        m["irt_count"] += 1
+                    else:
+                        m["non_irt_count"] += 1
+                if len(data.get("results", [])) < 30:
+                    break
+                page += 1
+                time.sleep(0.3)
+            time.sleep(0.2)
+
+        # if any agent has >300 tickets in a status the objects are truncated but
+        # the count is exact — assign the gap to NON IRT so the totals still match
+        classified = m["irt_count"] + m["non_irt_count"]
+        total_unres = m["total_open"] + m["pending"] + m["waiting_customer"] + m["waiting_third_party"]
+        if classified < total_unres:
+            m["non_irt_count"] += total_unres - classified
 
     # Merge CSAT
     reversed_target = {v: k for k, v in target.items()}
