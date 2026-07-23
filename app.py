@@ -51,12 +51,14 @@ STATUS_WAITING_THIRD_PARTY = 7
 ROUND_ROBIN_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "round_robin_log.json")
 ROUND_ROBIN_POLL_MINUTES = 5
 
-cached_data       = {}
-last_updated      = "Loading..."
-_computing        = False
-_compute_error    = None
+cached_data        = {}
+last_updated       = "Loading..."
+_computing         = False
+_compute_error     = None
 incident_field_key = None
 round_robin_state  = {}   # {date_str: {agent_name: {"on_minutes": int, "last_seen": iso, "currently_on": bool}}}
+_agents_cache      = {}   # {agent_id: name} — refreshed at most once per 2 hours
+_agents_cache_ts   = 0.0  # epoch seconds
 
 
 # ── Freshdesk plumbing ───────────────────────────────────────────────────
@@ -66,15 +68,15 @@ def fd_headers():
     return {"Authorization": f"Basic {encoded}", "Content-Type": "application/json"}
 
 
-def fd_get(endpoint, params=None):
+def fd_get(endpoint, params=None, max_retries=1):
     url = f"https://{FRESHDESK_DOMAIN}/api/v2/{endpoint}"
     retries = 0
-    while retries < 3:
+    while retries <= max_retries:
         try:
             r = requests.get(url, headers=fd_headers(), params=params or {}, timeout=30)
             if r.status_code == 429:
-                wait = min(int(r.headers.get("Retry-After", 60)), 60)  # cap at 60s
-                logger.warning(f"Rate limited on {endpoint} — waiting {wait}s (retry {retries+1}/3)")
+                wait = min(int(r.headers.get("Retry-After", 30)), 30)  # cap at 30s
+                logger.warning(f"Rate limited on {endpoint} — waiting {wait}s (retry {retries+1}/{max_retries+1})")
                 time.sleep(wait)
                 retries += 1
                 continue
@@ -82,7 +84,7 @@ def fd_get(endpoint, params=None):
         except Exception as e:
             logger.error(f"Request error {endpoint}: {e}")
             return None
-    logger.error(f"{endpoint}: gave up after 3 rate-limit retries")
+    logger.error(f"{endpoint}: gave up after {max_retries+1} attempts")
     return None
 
 
@@ -114,6 +116,18 @@ def fetch_agents():
     if r and r.status_code == 200:
         return {a["id"]: a["contact"]["name"] for a in r.json()}
     return {}
+
+
+def fetch_agents_cached():
+    """Return {agent_id: name}, refreshing at most once every 2 hours."""
+    global _agents_cache, _agents_cache_ts
+    if _agents_cache and (time.time() - _agents_cache_ts) < 7200:
+        return dict(_agents_cache)
+    result = fetch_agents()
+    if result:
+        _agents_cache = result
+        _agents_cache_ts = time.time()
+    return dict(_agents_cache) or {}
 
 
 def fetch_agent_availability():
@@ -310,7 +324,7 @@ def compute_metrics():
     if incident_field_key is None:
         detect_incident_type_field()
 
-    agents_map = fetch_agents()
+    agents_map = fetch_agents_cached()
     target = {aid: name for aid, name in agents_map.items() if name in AGENT_NAMES}
     logger.info(f"Matched {len(target)}/{len(agents_map)} agents")
 
@@ -318,14 +332,13 @@ def compute_metrics():
     now_ist   = now_utc.astimezone(IST)
     today_ist = now_ist.strftime("%Y-%m-%d")
 
-    # ── Phase 1: fetch recent tickets (14 days) ──────────────────────────
-    # Used for: assigned_today, resolved_today, urgent_high, reopened,
-    #           FRT today/14d avg, ART today/14d avg.
+    # Fetch tickets updated in last 14 days — capped at 3 pages (300 tickets)
     since = (now_utc - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since}, max_pages=5)
+    all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since}, max_pages=3)
     logger.info(f"Tickets (14d): {len(all_tickets)}")
 
-    csat_map = fetch_csat()
+    # CSAT: Freshdesk ratings field is not populated via this endpoint — skip to save quota
+    csat_map = {}
 
     metrics = {name: {"all": blank(), "Email": blank(), "Chat": blank(), "Phone": blank()}
                for name in AGENT_NAMES}
@@ -485,10 +498,18 @@ def _save_rr_state():
 def poll_round_robin():
     """Runs every ROUND_ROBIN_POLL_MINUTES. Accumulates 'on' minutes per agent per day
     based on Freshdesk's live agent availability flag."""
-    global round_robin_state
+    global round_robin_state, _agents_cache, _agents_cache_ts
     try:
-        agents_map = fetch_agents()
-        avail = fetch_agent_availability()
+        r = fd_get("agents", {"per_page": 100})
+        if not r or r.status_code != 200:
+            logger.error(f"Round-robin poll: agents fetch failed")
+            return
+        all_agents = r.json()
+        agents_map = {a["id"]: a["contact"]["name"] for a in all_agents}
+        avail      = {a["id"]: bool(a.get("available")) for a in all_agents}
+        # Refresh the shared cache while we're at it
+        _agents_cache    = agents_map
+        _agents_cache_ts = time.time()
     except Exception as e:
         logger.error(f"Round-robin poll failed: {e}")
         return
@@ -670,11 +691,19 @@ def _bg_compute():
         _compute_error = str(e)
         logger.error(f"compute_metrics crashed: {e}", exc_info=True)
 
+
+def _scheduled_compute():
+    if _computing:
+        logger.warning("Skipping scheduled compute — previous still running")
+        return
+    _bg_compute()
+
+
 threading.Thread(target=_bg_compute, daemon=True).start()
 poll_round_robin()
 
 scheduler = BackgroundScheduler(timezone=IST)
-scheduler.add_job(compute_metrics, "interval", hours=1, id="refresh")
+scheduler.add_job(_scheduled_compute, "interval", hours=1, id="refresh")
 scheduler.add_job(poll_round_robin, "interval", minutes=ROUND_ROBIN_POLL_MINUTES, id="rr_poll")
 scheduler.add_job(post_slack_eod, "cron", hour=22, minute=0, timezone=IST, id="eod")
 scheduler.start()
