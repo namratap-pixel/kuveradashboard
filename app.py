@@ -138,14 +138,15 @@ def detect_incident_type_field():
 
 
 def classify_irt(ticket):
-    """Blank / 'Non IRT' value -> NON_IRT. Anything else -> IRT."""
     if not incident_field_key:
-        return "UNKNOWN"
+        return "NON_IRT"
     cf = ticket.get("custom_fields") or {}
     val = cf.get(incident_field_key)
-    if val is None or str(val).strip() == "" or str(val).strip().lower() == "non irt":
+    if val is None or str(val).strip() == "":
         return "NON_IRT"
-    return "IRT"
+    if str(val).strip().upper().startswith("IRT"):
+        return "IRT"
+    return "NON_IRT"
 
 
 def fetch_csat():
