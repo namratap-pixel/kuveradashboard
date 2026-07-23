@@ -9,6 +9,7 @@ import json
 import logging
 import atexit
 import time
+import threading
 
 from data_sources import (
     get_attendance_month, get_leave_balance, get_holidays,
@@ -635,7 +636,7 @@ def health():
 
 # ── Scheduler ──────────────────────────────────────────────────────────────
 _load_rr_state()
-compute_metrics()
+threading.Thread(target=compute_metrics, daemon=True).start()
 poll_round_robin()
 
 scheduler = BackgroundScheduler(timezone=IST)
