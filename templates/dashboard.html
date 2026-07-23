@@ -206,7 +206,10 @@ async function fetchJSON(url){
 async function loadMetrics(){
   const j = await fetchJSON('/api/metrics');
   metricsCache = j;
-  document.getElementById('lastUpdated').textContent = 'Updated ' + (j.last_updated || '—');
+  let status = 'Updated ' + (j.last_updated || '—');
+  if(j.compute_error) status = '⚠ Sync error — see dashboard';
+  else if(j.computing) status = '⏳ Syncing…';
+  document.getElementById('lastUpdated').textContent = status;
 }
 async function loadAttendance(){
   const key = attYear+'-'+attMonth;
@@ -256,7 +259,13 @@ function emptyState(msg){
 // ---- Tab 1: Productivity ----
 function renderProductivity(){
   const rows = agentRows();
-  if(!rows.length) return emptyState('Syncing with Freshdesk… first load takes 3–5 minutes. Page is checking every 15 seconds.');
+  if(!rows.length){
+    const err = metricsCache && metricsCache.compute_error;
+    const syncing = metricsCache && metricsCache.computing;
+    if(err) return emptyState('Sync error: ' + err);
+    if(syncing) return emptyState('⏳ Syncing with Freshdesk… first load takes 3–5 minutes. Page checks every 15 s.');
+    return emptyState('Waiting for first Freshdesk sync… page checks every 15 s.');
+  }
   const totals = {
     assigned_today: sumRows(rows,'assigned_today'),
     total_open: sumRows(rows,'total_open'),

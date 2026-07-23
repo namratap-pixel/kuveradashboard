@@ -53,6 +53,8 @@ ROUND_ROBIN_POLL_MINUTES = 5
 
 cached_data       = {}
 last_updated      = "Loading..."
+_computing        = False
+_compute_error    = None
 incident_field_key = None
 round_robin_state  = {}   # {date_str: {agent_name: {"on_minutes": int, "last_seen": iso, "currently_on": bool}}}
 
@@ -290,7 +292,9 @@ def blank():
 
 
 def compute_metrics():
-    global cached_data, last_updated
+    global cached_data, last_updated, _computing, _compute_error
+    _computing = True
+    _compute_error = None
     logger.info("Refreshing metrics...")
 
     if incident_field_key is None:
@@ -474,6 +478,7 @@ def compute_metrics():
 
     cached_data  = metrics
     last_updated = now_ist.strftime("%d %b %Y, %I:%M %p IST")
+    _computing   = False
     logger.info(f"Done: {last_updated}")
 
 
@@ -627,7 +632,9 @@ def dashboard():
 @app.route("/api/metrics")
 def metrics_api():
     return jsonify({"data": cached_data, "last_updated": last_updated,
-                     "incident_type_field": incident_field_key})
+                     "incident_type_field": incident_field_key,
+                     "computing": _computing,
+                     "compute_error": _compute_error})
 
 
 @app.route("/api/attendance")
@@ -649,9 +656,11 @@ def round_robin_api():
 
 @app.route("/force-refresh")
 def force_refresh():
+    if _computing:
+        return jsonify({"status": "in_progress", "message": "sync already running"})
     try:
         compute_metrics()
-        return jsonify({"status": "ok", "last_updated": last_updated})
+        return jsonify({"status": "ok", "last_updated": last_updated, "agents": len(cached_data)})
     except Exception as e:
         logger.error(f"force-refresh failed: {e}", exc_info=True)
         return jsonify({"status": "error", "error": str(e)}), 500
@@ -659,16 +668,26 @@ def force_refresh():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "last_updated": last_updated})
+    return jsonify({
+        "status": "ok",
+        "last_updated": last_updated,
+        "computing": _computing,
+        "compute_error": _compute_error,
+        "agents_loaded": len(cached_data),
+        "api_key_set": bool(FRESHDESK_API_KEY),
+    })
 
 
 # ── Scheduler ──────────────────────────────────────────────────────────────
 _load_rr_state()
 
 def _bg_compute():
+    global _computing, _compute_error
     try:
         compute_metrics()
     except Exception as e:
+        _computing = False
+        _compute_error = str(e)
         logger.error(f"compute_metrics crashed: {e}", exc_info=True)
 
 threading.Thread(target=_bg_compute, daemon=True).start()
