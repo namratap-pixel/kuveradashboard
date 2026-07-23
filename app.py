@@ -281,7 +281,7 @@ def compute_metrics():
     now_ist  = now_utc.astimezone(IST)
     today_ist = now_ist.strftime("%Y-%m-%d")
 
-    since = (now_utc - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = (now_utc - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
     all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since})
     logger.info(f"Total tickets: {len(all_tickets)}")
 
@@ -365,8 +365,7 @@ def compute_metrics():
                     except Exception:
                         pass
 
-    # Correct unresolved counts AND classify IRT/NON IRT from the same search API source
-    # so that IRT + NON IRT always equals total_unresolved
+    # Correct unresolved counts AND classify IRT/NON IRT from search API (one call per status per agent)
     logger.info("Correcting unresolved counts and IRT/NON IRT via search API...")
     status_fields = [(2, "total_open"), (3, "pending"), (6, "waiting_customer"), (7, "waiting_third_party")]
     for agent_id, agent_name in target.items():
@@ -376,33 +375,21 @@ def compute_metrics():
         m["unknown_irt_count"] = 0
 
         for status_code, field in status_fields:
-            page = 1
-            while page <= 10:
-                r = fd_get("search/tickets", {
-                    "query": f'"status:{status_code} AND agent_id:{agent_id}"',
-                    "page": page,
-                })
-                if r is None or r.status_code != 200:
-                    break
+            r = fd_get("search/tickets", {"query": f'"status:{status_code} AND agent_id:{agent_id}"'})
+            if r and r.status_code == 200:
                 data = r.json()
-                if page == 1:
-                    count = data.get("total", 0)
-                    m[field] = count
-                    if field == "total_open":
-                        m["carry_forward"] = max(0, count - m["assigned_today"])
+                count = data.get("total", 0)
+                m[field] = count
+                if field == "total_open":
+                    m["carry_forward"] = max(0, count - m["assigned_today"])
                 for t in data.get("results", []):
                     if classify_irt(t) == "IRT":
                         m["irt_count"] += 1
                     else:
                         m["non_irt_count"] += 1
-                if len(data.get("results", [])) < 30:
-                    break
-                page += 1
-                time.sleep(0.3)
             time.sleep(0.2)
 
-        # if any agent has >300 tickets in a status the objects are truncated but
-        # the count is exact — assign the gap to NON IRT so the totals still match
+        # guarantee IRT + NON IRT = total_unresolved
         classified = m["irt_count"] + m["non_irt_count"]
         total_unres = m["total_open"] + m["pending"] + m["waiting_customer"] + m["waiting_third_party"]
         if classified < total_unres:
@@ -626,6 +613,16 @@ def round_robin_api():
     return jsonify({"agents": get_round_robin_today(), "date": date.today().isoformat()})
 
 
+@app.route("/force-refresh")
+def force_refresh():
+    try:
+        compute_metrics()
+        return jsonify({"status": "ok", "last_updated": last_updated})
+    except Exception as e:
+        logger.error(f"force-refresh failed: {e}", exc_info=True)
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "last_updated": last_updated})
@@ -633,7 +630,14 @@ def health():
 
 # ── Scheduler ──────────────────────────────────────────────────────────────
 _load_rr_state()
-threading.Thread(target=compute_metrics, daemon=True).start()
+
+def _bg_compute():
+    try:
+        compute_metrics()
+    except Exception as e:
+        logger.error(f"compute_metrics crashed: {e}", exc_info=True)
+
+threading.Thread(target=_bg_compute, daemon=True).start()
 poll_round_robin()
 
 scheduler = BackgroundScheduler(timezone=IST)
