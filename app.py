@@ -360,14 +360,27 @@ def compute_metrics():
                     pass
 
             if status == STATUS_OPEN:
+                m["total_open"] += 1
                 m["assigned_today" if is_today else "carry_forward"] += 1
                 if priority >= 3:
                     m["urgent_high"] += 1
                 if stats.get("resolved_at"):
                     m["reopened"] += 1
+                irt = classify_irt(t)
+                if irt == "IRT":
+                    m["irt_count"] += 1
+                else:
+                    m["non_irt_count"] += 1
 
             elif status == STATUS_PENDING:
+                m["pending"] += 1
                 m["ageing"][pending_age_bucket(created, now_utc)] += 1
+
+            elif status == STATUS_WAITING_CUSTOMER:
+                m["waiting_customer"] += 1
+
+            elif status == STATUS_WAITING_THIRD_PARTY:
+                m["waiting_third_party"] += 1
 
             elif status == STATUS_RESOLVED:
                 ra = stats.get("resolved_at")
@@ -387,42 +400,6 @@ def compute_metrics():
                                 m["art_today_count"] += 1
                     except Exception:
                         pass
-
-    # ── Phase 2: accurate unresolved counts + IRT via tickets endpoint ────
-    # Uses /tickets?status=X which has a much higher rate limit than search API
-    # (200 req/min vs 20 req/min). 4 calls cover all unresolved statuses.
-    logger.info("Fetching current unresolved tickets by status...")
-    status_fields = [
-        (STATUS_OPEN,               "total_open"),
-        (STATUS_PENDING,            "pending"),
-        (STATUS_WAITING_CUSTOMER,   "waiting_customer"),
-        (STATUS_WAITING_THIRD_PARTY,"waiting_third_party"),
-    ]
-    for status_code, field in status_fields:
-        unresolved = fetch_all_pages("tickets", {
-            "status": status_code, "include": "stats", "per_page": 100
-        })
-        logger.info(f"  status {status_code}: {len(unresolved)} tickets")
-        for t in unresolved:
-            rid = t.get("responder_id")
-            if rid not in target:
-                continue
-            name = target[rid]
-            ch   = get_channel(t)
-            irt  = classify_irt(t)
-            for key in ("all", ch):
-                m = metrics[name][key]
-                m[field] += 1
-                if irt == "IRT":
-                    m["irt_count"] += 1
-                else:
-                    m["non_irt_count"] += 1
-        time.sleep(0.3)
-
-    # Fix carry_forward from the now-accurate total_open
-    for name in AGENT_NAMES:
-        m = metrics[name]["all"]
-        m["carry_forward"] = max(0, m["total_open"] - m["assigned_today"])
 
     # ── Merge CSAT ────────────────────────────────────────────────────────
     reversed_target = {v: k for k, v in target.items()}
