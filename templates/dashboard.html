@@ -256,7 +256,7 @@ function emptyState(msg){
 // ---- Tab 1: Productivity ----
 function renderProductivity(){
   const rows = agentRows();
-  if(!rows.length) return emptyState('No productivity data yet — waiting on the first Freshdesk sync.');
+  if(!rows.length) return emptyState('Syncing with Freshdesk… first load takes 3–5 minutes. Page is checking every 15 seconds.');
   const totals = {
     assigned_today: sumRows(rows,'assigned_today'),
     total_open: sumRows(rows,'total_open'),
@@ -495,7 +495,12 @@ document.getElementById('footNote').textContent =
 
 renderTabs();
 refreshAll(false);
-setInterval(()=>refreshAll(false), 60000);
+// Poll every 15 s while waiting for the first sync, switch to 60 s once data arrives
+function scheduleNext(){
+  const hasData = metricsCache && metricsCache.data && Object.keys(metricsCache.data).length > 0;
+  setTimeout(async ()=>{ await refreshAll(false); scheduleNext(); }, hasData ? 60000 : 15000);
+}
+scheduleNext();
 </script>
 </body>
 </html>
