@@ -68,18 +68,22 @@ def fd_headers():
 
 def fd_get(endpoint, params=None):
     url = f"https://{FRESHDESK_DOMAIN}/api/v2/{endpoint}"
-    while True:
+    retries = 0
+    while retries < 3:
         try:
             r = requests.get(url, headers=fd_headers(), params=params or {}, timeout=30)
             if r.status_code == 429:
-                wait = int(r.headers.get("Retry-After", 60))
-                logger.warning(f"Rate limited — waiting {wait}s")
+                wait = min(int(r.headers.get("Retry-After", 60)), 60)  # cap at 60s
+                logger.warning(f"Rate limited on {endpoint} — waiting {wait}s (retry {retries+1}/3)")
                 time.sleep(wait)
+                retries += 1
                 continue
             return r
         except Exception as e:
             logger.error(f"Request error {endpoint}: {e}")
             return None
+    logger.error(f"{endpoint}: gave up after 3 rate-limit retries")
+    return None
 
 
 def fetch_all_pages(endpoint, base_params, max_pages=None):
@@ -190,7 +194,7 @@ def fetch_csat(since_days=30):
         if len(data) < 100:
             break
         page += 1
-        if page > 20:   # cap at 2000 ratings — enough for per-agent averages
+        if page > 5:    # cap at 500 ratings — enough for per-agent averages
             break
         time.sleep(0.5)
     return by_agent
@@ -318,7 +322,7 @@ def compute_metrics():
     # Used for: assigned_today, resolved_today, urgent_high, reopened,
     #           FRT today/14d avg, ART today/14d avg.
     since = (now_utc - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since}, max_pages=50)
+    all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since}, max_pages=20)
     logger.info(f"Tickets (14d): {len(all_tickets)}")
 
     csat_map = fetch_csat()
