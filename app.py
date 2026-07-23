@@ -105,7 +105,7 @@ def fetch_all_pages(endpoint, base_params, max_pages=None):
         if max_pages and page > max_pages:
             logger.warning(f"{endpoint}: hit max_pages={max_pages} cap ({len(results)} tickets)")
             break
-        time.sleep(0.5)
+        time.sleep(1.5)   # ~40 req/min — stays under Freshdesk's rate limit
     return results
 
 
@@ -196,7 +196,7 @@ def fetch_csat(since_days=30):
         page += 1
         if page > 5:    # cap at 500 ratings — enough for per-agent averages
             break
-        time.sleep(0.5)
+        time.sleep(1.5)
     return by_agent
 
 
