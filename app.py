@@ -25,7 +25,6 @@ FRESHDESK_DOMAIN = "kuvera.freshdesk.com"
 FRESHDESK_API_KEY = os.environ.get("FRESHDESK_API_KEY", "")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 IST = pytz.timezone("Asia/Kolkata")
-FRT_SLA_HOURS = 12
 
 # Override this in an env var if the Freshdesk custom field's internal key
 # is known ahead of time (skips the auto-detect call). Internal keys usually
@@ -205,26 +204,46 @@ def pending_age_bucket(created_at, now_utc):
         return "d7plus"
 
 
-def calc_frt(ticket, now_utc):
-    created_at = ticket.get("created_at")
-    if not created_at:
-        return None, False, 0
+def business_hours_between(start_utc, end_utc):
+    """Business hours (9 AM–8 PM IST, all days) between two UTC datetimes."""
+    BIZ_START_H = 9
+    BIZ_END_H   = 20
+    if not start_utc or not end_utc or end_utc <= start_utc:
+        return 0.0
+    start_ist = start_utc.astimezone(IST).replace(tzinfo=None)
+    end_ist   = end_utc.astimezone(IST).replace(tzinfo=None)
+    total_secs = 0.0
+    cursor = start_ist
+    while cursor.date() <= end_ist.date():
+        d = cursor.date()
+        day_open  = datetime(d.year, d.month, d.day, BIZ_START_H)
+        day_close = datetime(d.year, d.month, d.day, BIZ_END_H)
+        seg_start = max(cursor, day_open)
+        seg_end   = min(end_ist, day_close)
+        if seg_end > seg_start:
+            total_secs += (seg_end - seg_start).total_seconds()
+        next_d = d + timedelta(days=1)
+        cursor = datetime(next_d.year, next_d.month, next_d.day, BIZ_START_H)
+        if cursor > end_ist:
+            break
+    return round(total_secs / 3600, 2)
+
+
+def calc_biz_frt(ticket):
+    """Business-hours FRT: assigned_at (or created_at) → first_responded_at."""
+    stats = ticket.get("stats") or {}
+    responded_at = stats.get("first_responded_at")
+    if not responded_at:
+        return None
+    start_raw = stats.get("assigned_at") or ticket.get("created_at")
+    if not start_raw:
+        return None
     try:
-        created = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-        responded_at = (ticket.get("stats") or {}).get("first_responded_at")
-        if responded_at:
-            responded = datetime.strptime(responded_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-            frt_hrs = (responded - created).total_seconds() / 3600
-            breached = frt_hrs > FRT_SLA_HOURS
-            over = round(max(0, frt_hrs - FRT_SLA_HOURS), 1)
-            return round(frt_hrs, 1), breached, over
-        else:
-            age = (now_utc - created).total_seconds() / 3600
-            breached = age > FRT_SLA_HOURS
-            over = round(max(0, age - FRT_SLA_HOURS), 1)
-            return None, breached, over
+        start = datetime.strptime(start_raw,    "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
+        end   = datetime.strptime(responded_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
+        return business_hours_between(start, end)
     except Exception:
-        return None, False, 0
+        return None
 
 
 def blank():
@@ -242,17 +261,21 @@ def blank():
         "non_irt_count":     0,
         "unknown_irt_count": 0,
         "ageing":            {"d0_1": 0, "d1_3": 0, "d3_7": 0, "d7plus": 0},
-        # FRT
-        "frt_within":        0,
-        "frt_breached":      0,
-        "_frt_over_sum":     0.0,
-        "frt_breach_avg_hrs": None,
-        "frt_score":         None,
-        # ART (resolution)
+        # FRT (business hours: assigned_at → first_responded_at)
+        "_frt_today_sum":    0.0,
+        "frt_today_count":   0,
+        "frt_today_avg":     None,
+        "_frt_3m_sum":       0.0,
+        "frt_3m_count":      0,
+        "frt_3m_avg":        None,
+        # ART (business hours: created_at → resolved_at)
         "resolution_rate":   0,
-        "_res_sum":          0.0,
-        "_res_n":            0,
-        "art_hrs":           None,   # avg resolution time
+        "_art_today_sum":    0.0,
+        "art_today_count":   0,
+        "art_today_avg":     None,
+        "_art_3m_sum":       0.0,
+        "art_3m_count":      0,
+        "art_3m_avg":        None,
         # CSAT
         "csat_happy":        0,
         "csat_neutral":      0,
@@ -281,7 +304,7 @@ def compute_metrics():
     now_ist  = now_utc.astimezone(IST)
     today_ist = now_ist.strftime("%Y-%m-%d")
 
-    since = (now_utc - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = (now_utc - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
     all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since})
     logger.info(f"Total tickets: {len(all_tickets)}")
 
@@ -311,7 +334,7 @@ def compute_metrics():
             except Exception:
                 pass
 
-        frt_hrs, frt_bad, frt_over = calc_frt(t, now_utc)
+        biz_frt = calc_biz_frt(t)
 
         for key in ("all", ch):
             m = metrics[name][key]
@@ -324,18 +347,23 @@ def compute_metrics():
                 else:
                     m["unknown_irt_count"] += 1
 
+            if biz_frt is not None:
+                try:
+                    resp_str = stats.get("first_responded_at", "")
+                    if resp_str:
+                        resp_ist = (datetime.strptime(resp_str, "%Y-%m-%dT%H:%M:%SZ")
+                                    .replace(tzinfo=pytz.utc).astimezone(IST).strftime("%Y-%m-%d"))
+                        m["_frt_3m_sum"]  += biz_frt
+                        m["frt_3m_count"] += 1
+                        if resp_ist == today_ist:
+                            m["_frt_today_sum"]  += biz_frt
+                            m["frt_today_count"] += 1
+                except Exception:
+                    pass
+
             if status == STATUS_OPEN:
                 m["total_open"] += 1
                 m["assigned_today" if is_today else "carry_forward"] += 1
-                if frt_hrs is not None:
-                    if frt_bad:
-                        m["frt_breached"] += 1
-                        m["_frt_over_sum"] += frt_over
-                    else:
-                        m["frt_within"] += 1
-                elif frt_bad:
-                    m["frt_breached"] += 1
-                    m["_frt_over_sum"] += frt_over
                 if priority >= 3:
                     m["urgent_high"] += 1
                 if stats.get("resolved_at"):
@@ -356,12 +384,17 @@ def compute_metrics():
                 if ra:
                     try:
                         ra_utc = datetime.strptime(ra, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-                        if ra_utc.astimezone(IST).strftime("%Y-%m-%d") == today_ist:
+                        ra_ist = ra_utc.astimezone(IST).strftime("%Y-%m-%d")
+                        if ra_ist == today_ist:
                             m["resolved_today"] += 1
-                            if created:
-                                c = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-                                m["_res_sum"] += (ra_utc - c).total_seconds() / 3600
-                                m["_res_n"]   += 1
+                        if created:
+                            c = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
+                            biz_art = business_hours_between(c, ra_utc)
+                            m["_art_3m_sum"]  += biz_art
+                            m["art_3m_count"] += 1
+                            if ra_ist == today_ist:
+                                m["_art_today_sum"]  += biz_art
+                                m["art_today_count"] += 1
                     except Exception:
                         pass
 
@@ -415,27 +448,28 @@ def compute_metrics():
 
             m["total_unresolved"] = m["total_open"] + m["pending"] + m["waiting_customer"] + m["waiting_third_party"]
 
-            frt_total = m["frt_within"] + m["frt_breached"]
-            m["frt_score"] = round(m["frt_within"] / frt_total * 100) if frt_total > 0 else None
-            m["frt_breach_avg_hrs"] = round(m["_frt_over_sum"] / m["frt_breached"], 1) \
-                if m["frt_breached"] > 0 else None
-            del m["_frt_over_sum"]
+            m["frt_today_avg"] = round(m["_frt_today_sum"] / m["frt_today_count"], 1) \
+                if m["frt_today_count"] > 0 else None
+            m["frt_3m_avg"] = round(m["_frt_3m_sum"] / m["frt_3m_count"], 1) \
+                if m["frt_3m_count"] > 0 else None
+            del m["_frt_today_sum"], m["_frt_3m_sum"]
 
             total = m["total_open"] + m["resolved_today"]
             m["resolution_rate"] = round(m["resolved_today"] / total * 100) if total > 0 else 0
-            m["art_hrs"] = round(m["_res_sum"] / m["_res_n"], 1) if m["_res_n"] > 0 else None
-            del m["_res_sum"], m["_res_n"]
+            m["art_today_avg"] = round(m["_art_today_sum"] / m["art_today_count"], 1) \
+                if m["art_today_count"] > 0 else None
+            m["art_3m_avg"] = round(m["_art_3m_sum"] / m["art_3m_count"], 1) \
+                if m["art_3m_count"] > 0 else None
+            del m["_art_today_sum"], m["_art_3m_sum"]
 
             if m["csat_total"] > 0:
                 m["csat_score"] = round(m["csat_happy"] / m["csat_total"] * 100)
 
             ws, wt = 0.0, 0
-            if m["frt_score"] is not None:
-                ws += m["frt_score"] * 40; wt += 40
             if m["resolution_rate"] > 0:
-                ws += m["resolution_rate"] * 35; wt += 35
+                ws += m["resolution_rate"] * 60; wt += 60
             if m["csat_score"] is not None:
-                ws += m["csat_score"] * 25; wt += 25
+                ws += m["csat_score"] * 40; wt += 40
             m["overall_score"] = round(ws / wt) if wt > 0 else 0
 
     cached_data  = metrics
@@ -543,17 +577,17 @@ def post_slack_eod():
         logger.warning("Skipping EOD report")
         return
     now_ist_s = datetime.now(IST).strftime("%d %b %Y")
-    hdr = f"{'#':<3}{'Agent':<22}{'Score':>6}{'FRT%':>6}{'Res%':>6}{'CSAT%':>7}{'Open':>6}{'Unres':>6}"
-    sep = "─" * 65
+    hdr = f"{'#':<3}{'Agent':<22}{'Score':>6}{'FRT(h)':>7}{'Res%':>6}{'CSAT%':>7}{'Open':>6}{'Unres':>6}"
+    sep = "─" * 67
     rows = []
     agents_sorted = sorted(cached_data.items(),
                            key=lambda x: x[1]["all"]["overall_score"], reverse=True)
     for i, (name, data) in enumerate(agents_sorted, 1):
         m = data["all"]
-        frt   = f"{m['frt_score']}%" if m["frt_score"] is not None else "—"
+        frt   = f"{m['frt_today_avg']}h" if m["frt_today_avg"] is not None else "—"
         csat  = f"{m['csat_score']}%" if m["csat_score"] is not None else "—"
         rows.append(
-            f"{i:<3}{name:<22}{m['overall_score']:>5}%{frt:>6}{m['resolution_rate']:>5}%"
+            f"{i:<3}{name:<22}{m['overall_score']:>5}%{frt:>7}{m['resolution_rate']:>5}%"
             f"{csat:>7}{m['total_open']:>6}{m['total_unresolved']:>6}"
         )
     text = "\n".join([

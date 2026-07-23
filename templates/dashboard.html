@@ -312,25 +312,30 @@ function scorePill(v, goodMin, warnMin){
 function renderFrtArt(){
   const rows = agentRows();
   if(!rows.length) return emptyState('No FRT/ART data yet.');
-  const body = rows.sort((a,b)=>(b.m.frt_score||0)-(a.m.frt_score||0)).map(({name,m}) => `
+  const body = rows.sort((a,b)=>(a.m.frt_3m_avg||999)-(b.m.frt_3m_avg||999)).map(({name,m}) => `
     <tr>
       <td>${name}</td>
-      <td>${scorePill(m.frt_score, 85, 65)}</td>
-      <td>${num(m.frt_within)}</td>
-      <td>${num(m.frt_breached)}</td>
-      <td>${hrs(m.frt_breach_avg_hrs)}</td>
-      <td>${hrs(m.art_hrs)}</td>
+      <td>${hrs(m.frt_today_avg)}</td>
+      <td>${hrs(m.frt_3m_avg)}</td>
+      <td>${num(m.frt_today_count)}</td>
+      <td>${hrs(m.art_today_avg)}</td>
+      <td>${hrs(m.art_3m_avg)}</td>
       <td>${pct(m.resolution_rate)}</td>
     </tr>`).join('');
   return `
     <div class="panel-head">
-      <div><h2>FRT &amp; ART</h2><p>First Response Time and Average Resolution Time · SLA target: 12h FRT. Note: chat-resolved tickets left Open can show a reporting-gap FRT breach — see the process note.</p></div>
+      <div><h2>FRT &amp; ART</h2><p>Business-hours only (9 AM–8 PM IST). FRT = time from ticket assignment to first response. ART = time from ticket creation to resolution. Daily avg = today's tickets. 3M avg = last 90 days.</p></div>
       ${channelChips()}
     </div>
     <div class="table-scroll"><table>
       <thead><tr>
-        <th>Agent</th><th>FRT&nbsp;Score</th><th>Within&nbsp;SLA</th><th>Breached</th>
-        <th>Avg&nbsp;Breach&nbsp;Overage</th><th>ART&nbsp;(avg)</th><th>Resolution&nbsp;Rate</th>
+        <th>Agent</th>
+        <th>FRT&nbsp;Today&nbsp;(avg&nbsp;hrs)</th>
+        <th>FRT&nbsp;3M&nbsp;YTD&nbsp;(avg&nbsp;hrs)</th>
+        <th>Responses&nbsp;Today</th>
+        <th>ART&nbsp;Today&nbsp;(avg&nbsp;hrs)</th>
+        <th>ART&nbsp;3M&nbsp;YTD&nbsp;(avg&nbsp;hrs)</th>
+        <th>Resolution&nbsp;Rate</th>
       </tr></thead>
       <tbody>${body}</tbody>
     </table></div>`;
