@@ -304,13 +304,16 @@ def compute_metrics():
     target = {aid: name for aid, name in agents_map.items() if name in AGENT_NAMES}
     logger.info(f"Matched {len(target)}/{len(agents_map)} agents")
 
-    now_utc  = datetime.now(pytz.utc)
-    now_ist  = now_utc.astimezone(IST)
+    now_utc   = datetime.now(pytz.utc)
+    now_ist   = now_utc.astimezone(IST)
     today_ist = now_ist.strftime("%Y-%m-%d")
 
-    since = (now_utc - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # ── Phase 1: fetch recent tickets (14 days) ──────────────────────────
+    # Used for: assigned_today, resolved_today, urgent_high, reopened,
+    #           FRT today/14d avg, ART today/14d avg.
+    since = (now_utc - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
     all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since})
-    logger.info(f"Total tickets: {len(all_tickets)}")
+    logger.info(f"Tickets (14d): {len(all_tickets)}")
 
     csat_map = fetch_csat()
 
@@ -328,7 +331,7 @@ def compute_metrics():
         stats    = t.get("stats") or {}
         priority = t.get("priority", 2)
         created  = t.get("created_at", "")
-        irt_cat  = classify_irt(t)
+        biz_frt  = calc_biz_frt(t)
 
         is_today = False
         if created:
@@ -338,19 +341,10 @@ def compute_metrics():
             except Exception:
                 pass
 
-        biz_frt = calc_biz_frt(t)
-
         for key in ("all", ch):
             m = metrics[name][key]
 
-            if status in (STATUS_OPEN, STATUS_PENDING, STATUS_WAITING_CUSTOMER, STATUS_WAITING_THIRD_PARTY):
-                if irt_cat == "IRT":
-                    m["irt_count"] += 1
-                elif irt_cat == "NON_IRT":
-                    m["non_irt_count"] += 1
-                else:
-                    m["unknown_irt_count"] += 1
-
+            # FRT: any ticket that has a first response in our window
             if biz_frt is not None:
                 try:
                     resp_str = stats.get("first_responded_at", "")
@@ -366,7 +360,6 @@ def compute_metrics():
                     pass
 
             if status == STATUS_OPEN:
-                m["total_open"] += 1
                 m["assigned_today" if is_today else "carry_forward"] += 1
                 if priority >= 3:
                     m["urgent_high"] += 1
@@ -374,14 +367,7 @@ def compute_metrics():
                     m["reopened"] += 1
 
             elif status == STATUS_PENDING:
-                m["pending"] += 1
                 m["ageing"][pending_age_bucket(created, now_utc)] += 1
-
-            elif status == STATUS_WAITING_CUSTOMER:
-                m["waiting_customer"] += 1
-
-            elif status == STATUS_WAITING_THIRD_PARTY:
-                m["waiting_third_party"] += 1
 
             elif status == STATUS_RESOLVED:
                 ra = stats.get("resolved_at")
@@ -402,40 +388,46 @@ def compute_metrics():
                     except Exception:
                         pass
 
-    # Correct unresolved counts AND classify IRT/NON IRT from search API (one call per status per agent)
-    logger.info("Correcting unresolved counts and IRT/NON IRT via search API...")
-    status_fields = [(2, "total_open"), (3, "pending"), (6, "waiting_customer"), (7, "waiting_third_party")]
-    for agent_id, agent_name in target.items():
-        m = metrics[agent_name]["all"]
-        m["irt_count"] = 0
-        m["non_irt_count"] = 0
-        m["unknown_irt_count"] = 0
+    # ── Phase 2: accurate unresolved counts + IRT via tickets endpoint ────
+    # Uses /tickets?status=X which has a much higher rate limit than search API
+    # (200 req/min vs 20 req/min). 4 calls cover all unresolved statuses.
+    logger.info("Fetching current unresolved tickets by status...")
+    status_fields = [
+        (STATUS_OPEN,               "total_open"),
+        (STATUS_PENDING,            "pending"),
+        (STATUS_WAITING_CUSTOMER,   "waiting_customer"),
+        (STATUS_WAITING_THIRD_PARTY,"waiting_third_party"),
+    ]
+    for status_code, field in status_fields:
+        unresolved = fetch_all_pages("tickets", {
+            "status": status_code, "include": "stats", "per_page": 100
+        })
+        logger.info(f"  status {status_code}: {len(unresolved)} tickets")
+        for t in unresolved:
+            rid = t.get("responder_id")
+            if rid not in target:
+                continue
+            name = target[rid]
+            ch   = get_channel(t)
+            irt  = classify_irt(t)
+            for key in ("all", ch):
+                m = metrics[name][key]
+                m[field] += 1
+                if irt == "IRT":
+                    m["irt_count"] += 1
+                else:
+                    m["non_irt_count"] += 1
+        time.sleep(0.3)
 
-        for status_code, field in status_fields:
-            r = fd_get("search/tickets", {"query": f'"status:{status_code} AND agent_id:{agent_id}"'})
-            if r and r.status_code == 200:
-                data = r.json()
-                count = data.get("total", 0)
-                m[field] = count
-                if field == "total_open":
-                    m["carry_forward"] = max(0, count - m["assigned_today"])
-                for t in data.get("results", []):
-                    if classify_irt(t) == "IRT":
-                        m["irt_count"] += 1
-                    else:
-                        m["non_irt_count"] += 1
-            time.sleep(0.2)
+    # Fix carry_forward from the now-accurate total_open
+    for name in AGENT_NAMES:
+        m = metrics[name]["all"]
+        m["carry_forward"] = max(0, m["total_open"] - m["assigned_today"])
 
-        # guarantee IRT + NON IRT = total_unresolved
-        classified = m["irt_count"] + m["non_irt_count"]
-        total_unres = m["total_open"] + m["pending"] + m["waiting_customer"] + m["waiting_third_party"]
-        if classified < total_unres:
-            m["non_irt_count"] += total_unres - classified
-
-    # Merge CSAT
+    # ── Merge CSAT ────────────────────────────────────────────────────────
     reversed_target = {v: k for k, v in target.items()}
     for name in AGENT_NAMES:
-        aid = reversed_target.get(name)
+        aid  = reversed_target.get(name)
         csat = csat_map.get(aid, {})
         if csat:
             for key in ("all", "Email", "Chat", "Phone"):
@@ -445,12 +437,13 @@ def compute_metrics():
                 m["csat_bad"]     = csat.get("bad", 0)
                 m["csat_total"]   = csat.get("total", 0)
 
-    # Derived metrics + leaderboard score
+    # ── Derived metrics ───────────────────────────────────────────────────
     for name in AGENT_NAMES:
         for key in ("all", "Email", "Chat", "Phone"):
             m = metrics[name][key]
 
-            m["total_unresolved"] = m["total_open"] + m["pending"] + m["waiting_customer"] + m["waiting_third_party"]
+            m["total_unresolved"] = (m["total_open"] + m["pending"]
+                                     + m["waiting_customer"] + m["waiting_third_party"])
 
             m["frt_today_avg"] = round(m["_frt_today_sum"] / m["frt_today_count"], 1) \
                 if m["frt_today_count"] > 0 else None

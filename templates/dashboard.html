@@ -333,17 +333,17 @@ function renderFrtArt(){
     </tr>`).join('');
   return `
     <div class="panel-head">
-      <div><h2>FRT &amp; ART</h2><p>Business-hours only (9 AM–8 PM IST). FRT = time from ticket assignment to first response. ART = time from ticket creation to resolution. Daily avg = today's tickets. 3M avg = last 90 days.</p></div>
+      <div><h2>FRT &amp; ART</h2><p>Business-hours only (9 AM–8 PM IST). FRT = time from ticket assignment to first response. ART = time from ticket creation to resolution. Daily avg = today. 14-day avg = rolling 2-week window.</p></div>
       ${channelChips()}
     </div>
     <div class="table-scroll"><table>
       <thead><tr>
         <th>Agent</th>
         <th>FRT&nbsp;Today&nbsp;(avg&nbsp;hrs)</th>
-        <th>FRT&nbsp;3M&nbsp;YTD&nbsp;(avg&nbsp;hrs)</th>
+        <th>FRT&nbsp;14-day&nbsp;(avg&nbsp;hrs)</th>
         <th>Responses&nbsp;Today</th>
         <th>ART&nbsp;Today&nbsp;(avg&nbsp;hrs)</th>
-        <th>ART&nbsp;3M&nbsp;YTD&nbsp;(avg&nbsp;hrs)</th>
+        <th>ART&nbsp;14-day&nbsp;(avg&nbsp;hrs)</th>
         <th>Resolution&nbsp;Rate</th>
       </tr></thead>
       <tbody>${body}</tbody>
