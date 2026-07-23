@@ -82,7 +82,7 @@ def fd_get(endpoint, params=None):
             return None
 
 
-def fetch_all_pages(endpoint, base_params):
+def fetch_all_pages(endpoint, base_params, max_pages=None):
     results = []
     page = 1
     while True:
@@ -98,6 +98,9 @@ def fetch_all_pages(endpoint, base_params):
         if len(data) < 100:
             break
         page += 1
+        if max_pages and page > max_pages:
+            logger.warning(f"{endpoint}: hit max_pages={max_pages} cap ({len(results)} tickets)")
+            break
         time.sleep(0.5)
     return results
 
@@ -315,7 +318,7 @@ def compute_metrics():
     # Used for: assigned_today, resolved_today, urgent_high, reopened,
     #           FRT today/14d avg, ART today/14d avg.
     since = (now_utc - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since})
+    all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since}, max_pages=50)
     logger.info(f"Tickets (14d): {len(all_tickets)}")
 
     csat_map = fetch_csat()
