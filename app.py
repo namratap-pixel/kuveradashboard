@@ -317,12 +317,13 @@ def compute_metrics():
         for key in ("all", ch):
             m = metrics[name][key]
 
-            if irt_cat == "IRT":
-                m["irt_count"] += 1
-            elif irt_cat == "NON_IRT":
-                m["non_irt_count"] += 1
-            else:
-                m["unknown_irt_count"] += 1
+            if status in (STATUS_OPEN, STATUS_PENDING, STATUS_WAITING_CUSTOMER, STATUS_WAITING_THIRD_PARTY):
+                if irt_cat == "IRT":
+                    m["irt_count"] += 1
+                elif irt_cat == "NON_IRT":
+                    m["non_irt_count"] += 1
+                else:
+                    m["unknown_irt_count"] += 1
 
             if status == STATUS_OPEN:
                 m["total_open"] += 1
@@ -365,16 +366,19 @@ def compute_metrics():
                     except Exception:
                         pass
 
-    # Correct total_open using search API (catches all open tickets, no date cutoff)
-    logger.info("Correcting open ticket counts via search API...")
+    # Correct all unresolved counts using search API (no date cutoff, catches all statuses)
+    logger.info("Correcting unresolved counts via search API...")
+    status_fields = [(2, "total_open"), (3, "pending"), (6, "waiting_customer"), (7, "waiting_third_party")]
     for agent_id, agent_name in target.items():
-        r = fd_get("search/tickets", {"query": f'"status:2 AND agent_id:{agent_id}"'})
-        if r and r.status_code == 200:
-            true_open = r.json().get("total", 0)
-            m = metrics[agent_name]["all"]
-            m["total_open"] = true_open
-            m["carry_forward"] = max(0, true_open - m["assigned_today"])
-        time.sleep(0.5)
+        m = metrics[agent_name]["all"]
+        for status_code, field in status_fields:
+            r = fd_get("search/tickets", {"query": f'"status:{status_code} AND agent_id:{agent_id}"'})
+            if r and r.status_code == 200:
+                count = r.json().get("total", 0)
+                m[field] = count
+                if field == "total_open":
+                    m["carry_forward"] = max(0, count - m["assigned_today"])
+            time.sleep(0.3)
 
     # Merge CSAT
     reversed_target = {v: k for k, v in target.items()}
