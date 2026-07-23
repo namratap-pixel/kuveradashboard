@@ -152,12 +152,9 @@ def classify_irt(ticket):
 
 def fetch_csat():
     by_agent = {}
-    r = fd_get("satisfaction_ratings", {"per_page": 100})
-    if r is None or r.status_code != 200:
-        return by_agent
     page = 1
     while True:
-        r = fd_get("satisfaction_ratings", {"page": page, "per_page": 100})
+        r = fd_get("surveys/satisfaction_ratings", {"page": page, "per_page": 100})
         if r is None or r.status_code != 200:
             break
         data = r.json()
@@ -589,7 +586,7 @@ def post_slack_eod():
 def debug():
     r  = fd_get("tickets",  {"per_page": 3})
     ar = fd_get("agents",   {"per_page": 3})
-    cr = fd_get("satisfaction_ratings", {"per_page": 3})
+    cr = fd_get("surveys/satisfaction_ratings", {"per_page": 3})
     return jsonify({
         "tickets_status": r.status_code  if r  else "error",
         "tickets":        r.json()[:2]   if r and r.status_code == 200 else (r.text[:300] if r else None),
