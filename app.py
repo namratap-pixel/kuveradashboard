@@ -221,15 +221,16 @@ def detect_incident_type_field():
 
 
 def classify_irt(ticket):
+    """Blank or Non-IRT → NON_IRT.  Any other tag (IRT_BSE, IRT_TECH, …) → IRT."""
     if not incident_field_key:
         return "NON_IRT"
     cf = ticket.get("custom_fields") or {}
     val = cf.get(incident_field_key)
     if val is None or str(val).strip() == "":
         return "NON_IRT"
-    if str(val).strip().upper().startswith("IRT"):
-        return "IRT"
-    return "NON_IRT"
+    if "non" in str(val).strip().lower():
+        return "NON_IRT"
+    return "IRT"
 
 
 def fetch_csat(since_days=30):
@@ -478,12 +479,27 @@ def compute_metrics():
             if status == STATUS_PENDING:
                 m["pending"] += 1
                 m["ageing"][pending_age_bucket(created, now_utc)] += 1
+                irt = classify_irt(t)
+                if irt == "IRT":
+                    m["irt_count"] += 1
+                else:
+                    m["non_irt_count"] += 1
 
             elif status == STATUS_WAITING_CUSTOMER:
                 m["waiting_customer"] += 1
+                irt = classify_irt(t)
+                if irt == "IRT":
+                    m["irt_count"] += 1
+                else:
+                    m["non_irt_count"] += 1
 
             elif status == STATUS_WAITING_THIRD_PARTY:
                 m["waiting_third_party"] += 1
+                irt = classify_irt(t)
+                if irt == "IRT":
+                    m["irt_count"] += 1
+                else:
+                    m["non_irt_count"] += 1
 
             elif status == STATUS_RESOLVED:
                 ra = stats.get("resolved_at")
