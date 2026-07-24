@@ -782,11 +782,7 @@ def _compute_watchdog():
 
 
 def _startup_compute():
-    # Wait for the container network to fully initialize before making API calls.
-    # Immediately starting requests at process launch can cause the first SSL
-    # connection to hang indefinitely if the network stack isn't ready yet.
-    logger.info("Startup: waiting 15s for network init before first compute")
-    time.sleep(15)
+    logger.info("Startup compute beginning")
     _bg_compute()
 
 
