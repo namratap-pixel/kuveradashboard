@@ -410,7 +410,8 @@ def compute_metrics():
     metrics = {name: {"all": blank(), "Email": blank(), "Chat": blank(), "Phone": blank()}
                for name in AGENT_NAMES}
 
-    # ── Loop 1: Open tickets (total_open, carry_forward, assigned_today, IRT, urgency) ──
+    # ── Loop 1: Open tickets (total_open, IRT, urgency) ──
+    # Search API has no stats, so assigned_today is handled in Loop 2 (regular API).
     for t in open_tickets:
         rid = t.get("responder_id")
         if rid not in target:
@@ -420,20 +421,10 @@ def compute_metrics():
         ch       = get_channel(t)
         stats    = t.get("stats") or {}
         priority = t.get("priority", 2)
-        created  = t.get("created_at", "")
-
-        is_today = False
-        if created:
-            try:
-                c = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-                is_today = c.astimezone(IST).strftime("%Y-%m-%d") == today_ist
-            except Exception:
-                pass
 
         for key in ("all", ch):
             m = metrics[name][key]
             m["total_open"] += 1
-            m["assigned_today" if is_today else "carry_forward"] += 1
             if priority >= 3:
                 m["urgent_high"] += 1
             if stats.get("resolved_at"):
@@ -444,7 +435,7 @@ def compute_metrics():
             else:
                 m["non_irt_count"] += 1
 
-    # ── Loop 2: Recent tickets (FRT, ART, resolved_today, pending, waiting) ──
+    # ── Loop 2: Recent tickets (assigned_today, FRT, ART, resolved_today, pending, waiting) ──
     for t in recent_tickets:
         rid = t.get("responder_id")
         if rid not in target:
@@ -456,6 +447,18 @@ def compute_metrics():
         stats    = t.get("stats") or {}
         created  = t.get("created_at", "")
         biz_frt  = calc_biz_frt(t)
+
+        # Assigned today: use assigned_at if set; fall back to created_at
+        # (round-robin sets responder_id at creation with no assigned_at entry)
+        assigned_raw = stats.get("assigned_at") or created
+        if assigned_raw:
+            try:
+                aa = datetime.strptime(assigned_raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
+                if aa.astimezone(IST).strftime("%Y-%m-%d") == today_ist:
+                    for key in ("all", ch):
+                        metrics[name][key]["assigned_today"] += 1
+            except Exception:
+                pass
 
         for key in ("all", ch):
             m = metrics[name][key]
