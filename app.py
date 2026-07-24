@@ -694,6 +694,16 @@ def dashboard():
 
 @app.route("/api/metrics")
 def metrics_api():
+    # On Render free tier, background threads are CPU-starved and can't reliably
+    # execute timeout-based code (future.result(timeout=N) never fires).
+    # The request handler thread always gets CPU, so trigger compute here on first
+    # load. Worst case: blocks this request for ~50s while compute runs — acceptable
+    # since the dashboard shows "Loading..." and the browser waits.
+    if not cached_data and not _computing:
+        try:
+            compute_metrics()
+        except Exception as e:
+            logger.error(f"On-demand compute: {e}", exc_info=True)
     return jsonify({"data": cached_data, "last_updated": last_updated,
                      "incident_type_field": incident_field_key,
                      "computing": _computing,
@@ -781,15 +791,10 @@ def _compute_watchdog():
         logger.error(f"Watchdog fired — compute ran {elapsed}s, forcing _computing=False")
 
 
-def _startup_compute():
-    logger.info("Startup compute beginning")
-    _bg_compute()
-
-
-threading.Thread(target=_startup_compute, daemon=True).start()
-# Do NOT call poll_round_robin() synchronously at startup — it would race with
-# the compute thread for Freshdesk API quota and cause extra rate-limit sleeps.
-# The scheduler fires the first RR poll at T+10min (after compute is done).
+# No startup compute thread: on Render free tier, background threads are CPU-starved
+# and future.result(timeout=N) never fires. Compute is triggered lazily from /api/metrics
+# (request handler context always has CPU). APScheduler handles hourly refreshes after
+# DNS is warm from the first successful compute.
 _rr_first_run = datetime.now(IST) + timedelta(minutes=10)
 
 scheduler = BackgroundScheduler(timezone=IST)
