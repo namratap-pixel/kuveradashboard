@@ -19,6 +19,21 @@ from data_sources import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# In-memory log buffer so /logs endpoint can show what's happening
+_log_buffer = []
+_log_lock   = threading.Lock()
+
+class _BufHandler(logging.Handler):
+    def emit(self, record):
+        with _log_lock:
+            _log_buffer.append(f"{self.format(record)}")
+            if len(_log_buffer) > 200:
+                _log_buffer.pop(0)
+
+_buf_handler = _BufHandler()
+_buf_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
+logging.getLogger().addHandler(_buf_handler)
+
 app = Flask(__name__)
 
 FRESHDESK_DOMAIN = "kuvera.freshdesk.com"
@@ -69,14 +84,14 @@ def fd_headers():
     return {"Authorization": f"Basic {encoded}", "Content-Type": "application/json"}
 
 
-def fd_get(endpoint, params=None, max_retries=1):
+def fd_get(endpoint, params=None, max_retries=0):
     url = f"https://{FRESHDESK_DOMAIN}/api/v2/{endpoint}"
     retries = 0
     while retries <= max_retries:
         try:
-            r = requests.get(url, headers=fd_headers(), params=params or {}, timeout=30)
+            r = requests.get(url, headers=fd_headers(), params=params or {}, timeout=(5, 15))
             if r.status_code == 429:
-                wait = min(int(r.headers.get("Retry-After", 30)), 30)  # cap at 30s
+                wait = min(int(r.headers.get("Retry-After", 10)), 10)  # cap at 10s
                 logger.warning(f"Rate limited on {endpoint} — waiting {wait}s (retry {retries+1}/{max_retries+1})")
                 time.sleep(wait)
                 retries += 1
@@ -85,7 +100,7 @@ def fd_get(endpoint, params=None, max_retries=1):
         except Exception as e:
             logger.error(f"Request error {endpoint}: {e}")
             return None
-    logger.error(f"{endpoint}: gave up after {max_retries+1} attempts")
+    logger.warning(f"{endpoint}: gave up after rate limit")
     return None
 
 
@@ -703,18 +718,36 @@ def health():
     })
 
 
+@app.route("/logs")
+def logs():
+    with _log_lock:
+        lines = list(_log_buffer)
+    return "<pre style='font-family:monospace;font-size:13px'>" + "\n".join(lines) + "</pre>", 200
+
+
 # ── Scheduler ──────────────────────────────────────────────────────────────
 _load_rr_state()
 _load_dashboard_cache()
 
 def _bg_compute():
     global _computing, _compute_error
-    try:
-        compute_metrics()
-    except Exception as e:
+
+    def _run():
+        try:
+            compute_metrics()
+        except Exception as e:
+            global _computing, _compute_error
+            _computing = False
+            _compute_error = str(e)
+            logger.error(f"compute_metrics crashed: {e}", exc_info=True)
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(timeout=180)  # 3-minute hard cap
+    if _computing:
         _computing = False
-        _compute_error = str(e)
-        logger.error(f"compute_metrics crashed: {e}", exc_info=True)
+        _compute_error = "Timed out — check /logs"
+        logger.error("compute_metrics timed out after 3 min — forcing _computing=False")
 
 
 def _scheduled_compute():
