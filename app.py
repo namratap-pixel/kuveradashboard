@@ -10,6 +10,11 @@ import logging
 import atexit
 import time
 import threading
+import socket
+
+# Hard backstop: applies OS-level timeout to ALL sockets (incl. SSL handshakes),
+# which requests.get(timeout=...) alone can't guarantee in all urllib3 versions.
+socket.setdefaulttimeout(25)
 
 from data_sources import (
     get_attendance_month, get_leave_balance, get_holidays,
@@ -71,6 +76,7 @@ cached_data        = {}
 last_updated       = "Loading..."
 _computing         = False
 _compute_error     = None
+_compute_start_ts  = 0.0   # epoch seconds when current compute began
 incident_field_key = None
 round_robin_state  = {}   # {date_str: {agent_name: {"on_minutes": int, "last_seen": iso, "currently_on": bool}}}
 _agents_cache      = {}   # {agent_id: name} — refreshed at most once per 2 hours
@@ -128,7 +134,9 @@ def fetch_all_pages(endpoint, base_params, max_pages=None):
 
 
 def fetch_agents():
+    logger.info("fetch_agents: calling fd_get agents")
     r = fd_get("agents", {"per_page": 100})
+    logger.info(f"fetch_agents: got response {r.status_code if r else 'None'}")
     if r and r.status_code == 200:
         return {a["id"]: a["contact"]["name"] for a in r.json()}
     return {}
@@ -332,8 +340,9 @@ def blank():
 
 
 def compute_metrics():
-    global cached_data, last_updated, _computing, _compute_error
+    global cached_data, last_updated, _computing, _compute_error, _compute_start_ts
     _computing = True
+    _compute_start_ts = time.time()
     _compute_error = None
     logger.info("Refreshing metrics...")
 
@@ -708,11 +717,13 @@ def force_refresh():
 
 @app.route("/health")
 def health():
+    elapsed = round(time.time() - _compute_start_ts, 1) if _computing and _compute_start_ts > 0 else None
     return jsonify({
         "status": "ok",
         "last_updated": last_updated,
         "computing": _computing,
         "compute_error": _compute_error,
+        "compute_elapsed_s": elapsed,
         "agents_loaded": len(cached_data),
         "api_key_set": bool(FRESHDESK_API_KEY),
     })
@@ -730,24 +741,13 @@ _load_rr_state()
 _load_dashboard_cache()
 
 def _bg_compute():
-    global _computing, _compute_error
-
-    def _run():
-        try:
-            compute_metrics()
-        except Exception as e:
-            global _computing, _compute_error
-            _computing = False
-            _compute_error = str(e)
-            logger.error(f"compute_metrics crashed: {e}", exc_info=True)
-
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
-    worker.join(timeout=180)  # 3-minute hard cap
-    if _computing:
+    try:
+        compute_metrics()
+    except Exception as e:
+        global _computing, _compute_error
         _computing = False
-        _compute_error = "Timed out — check /logs"
-        logger.error("compute_metrics timed out after 3 min — forcing _computing=False")
+        _compute_error = str(e)
+        logger.error(f"compute_metrics crashed: {e}", exc_info=True)
 
 
 def _scheduled_compute():
@@ -755,6 +755,16 @@ def _scheduled_compute():
         logger.warning("Skipping scheduled compute — previous still running")
         return
     _bg_compute()
+
+
+def _compute_watchdog():
+    """Runs every minute; resets _computing if stuck for >3 minutes."""
+    global _computing, _compute_error, _compute_start_ts
+    if _computing and _compute_start_ts > 0 and (time.time() - _compute_start_ts) > 180:
+        elapsed = int(time.time() - _compute_start_ts)
+        _computing = False
+        _compute_error = f"Watchdog: timed out after {elapsed}s — check /logs"
+        logger.error(f"Watchdog fired — compute ran {elapsed}s, forcing _computing=False")
 
 
 threading.Thread(target=_bg_compute, daemon=True).start()
@@ -767,6 +777,7 @@ scheduler = BackgroundScheduler(timezone=IST)
 scheduler.add_job(_scheduled_compute, "interval", hours=1, id="refresh")
 scheduler.add_job(poll_round_robin, "interval", minutes=ROUND_ROBIN_POLL_MINUTES, id="rr_poll",
                   next_run_time=_rr_first_run)
+scheduler.add_job(_compute_watchdog, "interval", minutes=1, id="watchdog")
 scheduler.add_job(post_slack_eod, "cron", hour=22, minute=0, timezone=IST, id="eod")
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown(wait=False))
