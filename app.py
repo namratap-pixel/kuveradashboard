@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, render_template, request
 import requests
+import concurrent.futures
 import base64
 from datetime import datetime, timedelta, date
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -12,9 +13,13 @@ import time
 import threading
 import socket
 
-# Hard backstop: applies OS-level timeout to ALL sockets (incl. SSL handshakes),
-# which requests.get(timeout=...) alone can't guarantee in all urllib3 versions.
+# OS-level socket timeout backstop — supplements per-request timeout.
 socket.setdefaulttimeout(25)
+
+# Module-level thread pool for fd_get. Wrapping each request in a Future means
+# future.result(timeout=25) can abort even a hung DNS resolution, which no
+# Python socket/requests timeout can interrupt.
+_fd_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="fd_req")
 
 from data_sources import (
     get_attendance_month, get_leave_balance, get_holidays,
@@ -95,7 +100,13 @@ def fd_get(endpoint, params=None, max_retries=0):
     retries = 0
     while retries <= max_retries:
         try:
-            r = requests.get(url, headers=fd_headers(), params=params or {}, timeout=(5, 15))
+            # Wrap in a Future so future.result(timeout=25) can abort even
+            # a hung DNS resolution, which socket/requests timeouts cannot.
+            future = _fd_executor.submit(
+                requests.get, url,
+                headers=fd_headers(), params=params or {}, timeout=(5, 15)
+            )
+            r = future.result(timeout=25)
             if r.status_code == 429:
                 wait = min(int(r.headers.get("Retry-After", 10)), 10)  # cap at 10s
                 logger.warning(f"Rate limited on {endpoint} — waiting {wait}s (retry {retries+1}/{max_retries+1})")
@@ -103,6 +114,9 @@ def fd_get(endpoint, params=None, max_retries=0):
                 retries += 1
                 continue
             return r
+        except concurrent.futures.TimeoutError:
+            logger.error(f"fd_get timeout (25s) on {endpoint} — DNS or SSL hang")
+            return None
         except Exception as e:
             logger.error(f"Request error {endpoint}: {e}")
             return None
@@ -767,7 +781,16 @@ def _compute_watchdog():
         logger.error(f"Watchdog fired — compute ran {elapsed}s, forcing _computing=False")
 
 
-threading.Thread(target=_bg_compute, daemon=True).start()
+def _startup_compute():
+    # Wait for the container network to fully initialize before making API calls.
+    # Immediately starting requests at process launch can cause the first SSL
+    # connection to hang indefinitely if the network stack isn't ready yet.
+    logger.info("Startup: waiting 15s for network init before first compute")
+    time.sleep(15)
+    _bg_compute()
+
+
+threading.Thread(target=_startup_compute, daemon=True).start()
 # Do NOT call poll_round_robin() synchronously at startup — it would race with
 # the compute thread for Freshdesk API quota and cause extra rate-limit sleeps.
 # The scheduler fires the first RR poll at T+10min (after compute is done).
