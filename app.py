@@ -725,10 +725,9 @@ def _scheduled_compute():
 
 
 threading.Thread(target=_bg_compute, daemon=True).start()
-poll_round_robin()
-
-# Delay the first scheduler-fired RR poll by 10 minutes so it doesn't compete
-# with the startup compute for Freshdesk API quota.
+# Do NOT call poll_round_robin() synchronously at startup — it would race with
+# the compute thread for Freshdesk API quota and cause extra rate-limit sleeps.
+# The scheduler fires the first RR poll at T+10min (after compute is done).
 _rr_first_run = datetime.now(IST) + timedelta(minutes=10)
 
 scheduler = BackgroundScheduler(timezone=IST)
