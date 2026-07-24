@@ -147,6 +147,28 @@ def fetch_all_pages(endpoint, base_params, max_pages=None):
     return results
 
 
+def fetch_open_tickets_search():
+    """Fetch ALL open (status:2) tickets via Freshdesk search API.
+    Returns up to 300 results (10 pages × 30). Used for carry_forward / total_open
+    so that stale tickets untouched for 14+ days are not missed."""
+    results = []
+    for page in range(1, 11):
+        r = fd_get("search/tickets", {"query": '"status:2"', "include": "stats", "page": page})
+        if r is None or r.status_code != 200:
+            if r:
+                logger.error(f"search/tickets {r.status_code}: {r.text[:200]}")
+            break
+        data = r.json()
+        batch = data.get("results", [])
+        if not batch:
+            break
+        results.extend(batch)
+        if len(results) >= data.get("total", 0):
+            break
+        time.sleep(1.0)
+    return results
+
+
 def fetch_agents():
     logger.info("fetch_agents: calling fd_get agents")
     r = fd_get("agents", {"per_page": 100})
@@ -371,10 +393,15 @@ def compute_metrics():
     now_ist   = now_utc.astimezone(IST)
     today_ist = now_ist.strftime("%Y-%m-%d")
 
-    # Fetch tickets updated in last 14 days — capped at 3 pages (300 tickets)
+    # Fetch tickets updated in last 14 days — for FRT/ART/resolved/pending stats
     since = (now_utc - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    all_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since}, max_pages=3)
-    logger.info(f"Tickets (14d): {len(all_tickets)}")
+    fourteen_days_ago_ist = (now_ist - timedelta(days=14)).strftime("%Y-%m-%d")
+    recent_tickets = fetch_all_pages("tickets", {"include": "stats", "updated_since": since}, max_pages=3)
+    logger.info(f"Recent tickets (14d): {len(recent_tickets)}")
+
+    # Fetch ALL open tickets — avoids missing stale open tickets not updated in 14+ days
+    open_tickets = fetch_open_tickets_search()
+    logger.info(f"Open tickets (search): {len(open_tickets)}")
 
     # CSAT: Freshdesk ratings field is not populated via this endpoint — skip to save quota
     csat_map = {}
@@ -382,18 +409,17 @@ def compute_metrics():
     metrics = {name: {"all": blank(), "Email": blank(), "Chat": blank(), "Phone": blank()}
                for name in AGENT_NAMES}
 
-    for t in all_tickets:
+    # ── Loop 1: Open tickets (total_open, carry_forward, assigned_today, IRT, urgency) ──
+    for t in open_tickets:
         rid = t.get("responder_id")
         if rid not in target:
             continue
 
         name     = target[rid]
         ch       = get_channel(t)
-        status   = t.get("status")
         stats    = t.get("stats") or {}
         priority = t.get("priority", 2)
         created  = t.get("created_at", "")
-        biz_frt  = calc_biz_frt(t)
 
         is_today = False
         if created:
@@ -405,36 +431,51 @@ def compute_metrics():
 
         for key in ("all", ch):
             m = metrics[name][key]
+            m["total_open"] += 1
+            m["assigned_today" if is_today else "carry_forward"] += 1
+            if priority >= 3:
+                m["urgent_high"] += 1
+            if stats.get("resolved_at"):
+                m["reopened"] += 1
+            irt = classify_irt(t)
+            if irt == "IRT":
+                m["irt_count"] += 1
+            else:
+                m["non_irt_count"] += 1
 
-            # FRT: any ticket that has a first response in our window
+    # ── Loop 2: Recent tickets (FRT, ART, resolved_today, pending, waiting) ──
+    for t in recent_tickets:
+        rid = t.get("responder_id")
+        if rid not in target:
+            continue
+
+        name     = target[rid]
+        ch       = get_channel(t)
+        status   = t.get("status")
+        stats    = t.get("stats") or {}
+        created  = t.get("created_at", "")
+        biz_frt  = calc_biz_frt(t)
+
+        for key in ("all", ch):
+            m = metrics[name][key]
+
+            # FRT: only count responses that happened within the 14-day window
             if biz_frt is not None:
                 try:
                     resp_str = stats.get("first_responded_at", "")
                     if resp_str:
                         resp_ist = (datetime.strptime(resp_str, "%Y-%m-%dT%H:%M:%SZ")
                                     .replace(tzinfo=pytz.utc).astimezone(IST).strftime("%Y-%m-%d"))
-                        m["_frt_3m_sum"]  += biz_frt
-                        m["frt_3m_count"] += 1
+                        if resp_ist >= fourteen_days_ago_ist:
+                            m["_frt_3m_sum"]  += biz_frt
+                            m["frt_3m_count"] += 1
                         if resp_ist == today_ist:
                             m["_frt_today_sum"]  += biz_frt
                             m["frt_today_count"] += 1
                 except Exception:
                     pass
 
-            if status == STATUS_OPEN:
-                m["total_open"] += 1
-                m["assigned_today" if is_today else "carry_forward"] += 1
-                if priority >= 3:
-                    m["urgent_high"] += 1
-                if stats.get("resolved_at"):
-                    m["reopened"] += 1
-                irt = classify_irt(t)
-                if irt == "IRT":
-                    m["irt_count"] += 1
-                else:
-                    m["non_irt_count"] += 1
-
-            elif status == STATUS_PENDING:
+            if status == STATUS_PENDING:
                 m["pending"] += 1
                 m["ageing"][pending_age_bucket(created, now_utc)] += 1
 
@@ -452,7 +493,8 @@ def compute_metrics():
                         ra_ist = ra_utc.astimezone(IST).strftime("%Y-%m-%d")
                         if ra_ist == today_ist:
                             m["resolved_today"] += 1
-                        if created:
+                        # ART: only count resolutions within the 14-day window
+                        if ra_ist >= fourteen_days_ago_ist and created:
                             c = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
                             biz_art = business_hours_between(c, ra_utc)
                             m["_art_3m_sum"]  += biz_art
