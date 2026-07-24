@@ -49,6 +49,7 @@ STATUS_WAITING_CUSTOMER    = 6
 STATUS_WAITING_THIRD_PARTY = 7
 
 ROUND_ROBIN_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "round_robin_log.json")
+DASHBOARD_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard_cache.json")
 ROUND_ROBIN_POLL_MINUTES = 5
 
 cached_data        = {}
@@ -472,6 +473,7 @@ def compute_metrics():
     cached_data  = metrics
     last_updated = now_ist.strftime("%d %b %Y, %I:%M %p IST")
     _computing   = False
+    _save_dashboard_cache()
     logger.info(f"Done: {last_updated}")
 
 
@@ -493,6 +495,28 @@ def _save_rr_state():
             json.dump(round_robin_state, f)
     except Exception as e:
         logger.error(f"Could not persist round-robin log: {e}")
+
+
+def _save_dashboard_cache():
+    try:
+        with open(DASHBOARD_CACHE_PATH, "w") as f:
+            json.dump({"data": cached_data, "last_updated": last_updated}, f)
+    except Exception as e:
+        logger.warning(f"Could not save dashboard cache: {e}")
+
+
+def _load_dashboard_cache():
+    global cached_data, last_updated
+    try:
+        if os.path.exists(DASHBOARD_CACHE_PATH):
+            with open(DASHBOARD_CACHE_PATH) as f:
+                d = json.load(f)
+            if d.get("data"):
+                cached_data  = d["data"]
+                last_updated = d.get("last_updated", "Cached")
+                logger.info(f"Loaded dashboard cache: {last_updated}")
+    except Exception as e:
+        logger.warning(f"Could not load dashboard cache: {e}")
 
 
 def poll_round_robin():
@@ -681,6 +705,7 @@ def health():
 
 # ── Scheduler ──────────────────────────────────────────────────────────────
 _load_rr_state()
+_load_dashboard_cache()
 
 def _bg_compute():
     global _computing, _compute_error
@@ -702,9 +727,14 @@ def _scheduled_compute():
 threading.Thread(target=_bg_compute, daemon=True).start()
 poll_round_robin()
 
+# Delay the first scheduler-fired RR poll by 10 minutes so it doesn't compete
+# with the startup compute for Freshdesk API quota.
+_rr_first_run = datetime.now(IST) + timedelta(minutes=10)
+
 scheduler = BackgroundScheduler(timezone=IST)
 scheduler.add_job(_scheduled_compute, "interval", hours=1, id="refresh")
-scheduler.add_job(poll_round_robin, "interval", minutes=ROUND_ROBIN_POLL_MINUTES, id="rr_poll")
+scheduler.add_job(poll_round_robin, "interval", minutes=ROUND_ROBIN_POLL_MINUTES, id="rr_poll",
+                  next_run_time=_rr_first_run)
 scheduler.add_job(post_slack_eod, "cron", hour=22, minute=0, timezone=IST, id="eod")
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown(wait=False))

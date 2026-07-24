@@ -2,3 +2,5 @@ new/
 DEPLOY_GUIDE.txt
 *.pyc
 __pycache__/
+dashboard_cache.json
+round_robin_log.json
